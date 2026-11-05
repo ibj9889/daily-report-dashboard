@@ -59,6 +59,15 @@
     if (!b) return '-';
     return Math.round((a / b) * 100) + '%';
   }
+  function rangeText(start, end) { return md(start) + ' ~ ' + md(end); }
+  // 진행 중인 주를 흐리게 그리기 위한 오늘(한국 시간) 날짜
+  function todayKst() {
+    try {
+      return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
+    } catch (e) {
+      return isoOf(new Date());
+    }
+  }
 
   // ============================================================ 복호화
 
@@ -215,17 +224,26 @@
     return list[1];
   }
 
-  function periodPicker(per) {
+  // 화면 머리 오른쪽에 들어가는 기간 선택. extraHtml 은 같은 줄 끝에 붙는 버튼.
+  function periodPicker(per, extraHtml) {
     const buttons = presets().map((p) => {
       const on = p.id === per.id ? ' on' : '';
       return '<button type="button" class="' + on + '" data-preset="' + p.id + '">' + esc(p.label) + '</button>';
     }).join('');
-    return '<div class="toolbar no-print">' +
+    return '<div class="period-row no-print">' +
       '<div class="seg">' + buttons + '</div>' +
       '<input type="date" data-from value="' + per.start + '" aria-label="시작일">' +
       '<span class="muted">~</span>' +
       '<input type="date" data-to value="' + per.end + '" aria-label="종료일">' +
-      '</div>';
+      (extraHtml || '') +
+      '</div>' +
+      '<div class="per num">' + mdw(per.start) + ' ~ ' + mdw(per.end) + '</div>';
+  }
+
+  function viewHead(titleHtml, subHtml, rightHtml, titleClass) {
+    return '<div class="view-head"><div class="vh-left"><h2' + (titleClass ? ' class="' + titleClass + '"' : '') + '>' + titleHtml + '</h2>' +
+      (subHtml ? '<div class="sub">' + subHtml + '</div>' : '') + '</div>' +
+      (rightHtml ? '<div class="vh-right">' + rightHtml + '</div>' : '') + '</div>';
   }
 
   function bindPeriodPicker(root, view, args, extraParams) {
@@ -271,10 +289,20 @@
     else location.hash = hash;
   }
 
+  const VIEW_LABEL = {
+    brief: '회의 브리핑',
+    day: '일자별',
+    member: '인원별',
+    summary: '일간/주간/월간 요약',
+    project: '프로젝트',
+    status: '보고 현황',
+    search: '검색',
+    guide: '활용 안내',
+  };
+
   let lastView = '';
   function render() {
     const r = parseHash();
-    $$('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === r.view));
     const root = $('#view');
     const renderers = {
       brief: renderBrief,
@@ -286,34 +314,99 @@
       search: renderSearch,
       guide: renderGuide,
     };
-    const fn = renderers[r.view] || renderBrief;
-    fn(root, r.args, r.params);
-    if (r.view !== lastView) window.scrollTo(0, 0);
-    lastView = r.view;
+    const view = renderers[r.view] ? r.view : 'brief';
+    $$('#tabs .nav-item').forEach((t) => t.classList.toggle('on', t.dataset.view === view));
+    $('#crumb-title').textContent = VIEW_LABEL[view];
+    S.viewMemberId = null;
+    renderers[view](root, r.args, r.params);
+    updateRail(view, r.params);
+    if (view !== lastView) window.scrollTo(0, 0);
+    lastView = view;
+  }
+
+  // 왼쪽 팀장 목록: 최근 10 보고일 제출 막대와 전체 기간 제출률. 시작할 때 한 번 그린다.
+  function buildRail() {
+    const all = presets().find((p) => p.id === 'all');
+    const stats = submissionStats(all, S.reporters.map((m) => m.id));
+    const last10 = S.workdays.slice(-10);
+    $('#rail-count').textContent = '팀장 ' + S.reporters.length + '명';
+    const rows = S.reporters.map((m) => {
+      const s = stats.byMember.get(m.id);
+      const rate = s.total ? Math.round((s.done / s.total) * 100) + '%' : '-';
+      const ticks = last10.map((d) => {
+        const dayMap = S.reportsByDay.get(d);
+        const has = !!(dayMap && dayMap.has(m.id));
+        const tip = mdw(d) + (has ? ' 보고 있음' : ' 보고 없음');
+        return '<i class="' + (has ? '' : 'x') + '" data-tip="' + esc(tip) + '"></i>';
+      }).join('');
+      return '<li><a class="person" data-id="' + esc(m.id) + '" href="#member/' + encodeURIComponent(m.id) + '">' +
+        '<span class="nm">' + esc(m.name) + (m.team ? '<span class="tm">' + esc(m.team) + '</span>' : '') + '</span>' +
+        '<span class="rt">' + rate + '</span><span class="ticks">' + ticks + '</span></a></li>';
+    }).join('');
+    $('#rail-people').innerHTML = rows;
+  }
+
+  // 화면이 바뀔 때마다 고른 사람 표시와 링크의 기간만 바꾼다
+  function updateRail(view, params) {
+    const keep = {};
+    if (view === 'member') {
+      if (params.p) keep.p = params.p;
+      if (params.from) keep.from = params.from;
+      if (params.to) keep.to = params.to;
+    }
+    $$('#rail-people .person').forEach((a) => {
+      const id = a.dataset.id;
+      const selected = view === 'member' && id === S.viewMemberId;
+      a.classList.toggle('on', selected);
+      a.setAttribute('href', buildHash('member', [id], keep));
+    });
   }
 
   // ============================================================ 공통 조각
 
+  // 원문 카드: 왼쪽 칸은 날짜(같은 사람 목록) 또는 사람(하루 목록), 오른쪽 칸은 원문
   function msgCard(m, opts) {
     const o = opts || {};
     const posted = m.pd ? '게시 ' + md(m.pd) + ' ' + m.t : m.t;
     let body = esc(m.x.replace(/\n{3,}/g, '\n\n').trim());
     if (o.highlight) body = highlightHtml(body, o.highlight);
     const clamp = o.clamp && m.x.length > 600;
-    let kw = '';
+
+    let when = '';
+    let whoLine = '';
+    const kindTag = m.k !== 'report' ? '<span class="kind">' + (KIND_LABEL[m.k] || m.k) + '</span>' : '';
+    if (o.showDate) {
+      when = '<a href="#day/' + m.d + '"><b>' + mdw(m.d) + '</b></a><span>' + esc(posted) + '</span>';
+      if (!o.samePerson) whoLine = '<div class="msg-who">' + whoHtml(m.p) + kindTag + '</div>';
+    } else {
+      const p = person(m.p);
+      when = '<a class="who" href="#member/' + encodeURIComponent(m.p) + '">' + esc(p.name) + '</a>' +
+        (p.team ? '<span class="team">' + esc(p.team) + '</span>' : '') + '<span>' + esc(posted) + '</span>';
+    }
+
+    const foot = [];
+    if (m.k === 'report') {
+      let remarkCount = 0;
+      for (const it of (m.it || [])) {
+        if (it.y === 'issue' && it.r) remarkCount++;
+      }
+      if (remarkCount) foot.push('<span class="badge warn">특이사항 ' + remarkCount + '건</span>');
+      else foot.push('<span class="badge">특이사항 없음</span>');
+    }
+    if (kindTag && !whoLine) foot.push(kindTag);
     if (m.kw && m.kw.length && o.showKeywords !== false) {
-      kw = '<div class="msg-foot">' + m.kw.map((idx) => {
+      for (const idx of m.kw) {
         const k = S.keywords[idx];
-        if (!k) return '';
-        return '<a class="pill" href="#project/' + encodeURIComponent(k.name) + '">' + esc(k.name) + '</a>';
-      }).join('') + '</div>';
+        if (k) foot.push('<a class="chip" href="#project/' + encodeURIComponent(k.name) + '">' + esc(k.name) + '</a>');
+      }
     }
     return '<article class="msg" id="m' + m.i + '">' +
-      '<div class="msg-head"><div>' + whoHtml(m.p) + ' <span class="kind">' + (KIND_LABEL[m.k] || m.k) + '</span></div>' +
-      '<div class="small muted">' + (o.showDate ? dayLink(m.d) + ' ' : '') + esc(posted) + '</div></div>' +
+      '<div class="when">' + when + '</div>' +
+      '<div class="msg-main">' + whoLine +
       '<div class="msg-body' + (clamp ? ' clamp' : '') + '">' + body + '</div>' +
       (clamp ? '<div class="msg-more"><button class="btn small" data-unclamp>전체 보기</button></div>' : '') +
-      kw + '</article>';
+      (foot.length ? '<div class="msg-foot">' + foot.join('') + '</div>' : '') +
+      '</div></article>';
   }
 
   function bindUnclamp(root) {
@@ -418,12 +511,37 @@
       const zero = p.value === 0 ? ' zero' : '';
       const tip = esc(p.tip || (p.label + ': ' + p.value));
       const link = p.href ? ' data-href="' + esc(p.href) + '" style="cursor:pointer"' : '';
+      const current = p.current ? ' current' : '';
       return '<div class="bar-col" data-tip="' + tip + '"' + link + '>' +
         (p.value && o.showValues !== false ? '<span class="v">' + p.value + '</span>' : '') +
-        '<div class="bar' + zero + '" style="height:' + h + '%"></div></div>';
+        '<div class="bar' + zero + current + '" style="height:' + h + '%"></div></div>';
     }).join('');
     const axis = points.map((p) => '<span>' + esc(p.short || '') + '</span>').join('');
-    return '<div class="bars">' + cols + '</div><div class="bar-axis">' + axis + '</div>';
+    const note = o.note ? '<p class="bars-note">' + esc(o.note) + '</p>' : '';
+    // 막대가 많으면(보고일별 차트 등) 좁은 화면에서 넘치지 않게 간격을 줄인다
+    const dense = points.length > 20 ? ' dense' : '';
+    return '<div class="bars' + dense + '">' + cols + '</div><div class="bar-axis' + dense + '">' + axis + '</div>' + note;
+  }
+
+  // 주별 막대 자료. 축 글자는 주 시작일, 긴 이름은 툴팁에 둔다.
+  function weekPoints(weeks, countFn, unitLabel) {
+    const thisWeek = weekStart(todayKst());
+    return weeks.map((w) => {
+      const n = countFn(w);
+      return {
+        label: weekLabel(w),
+        short: md(w),
+        value: n,
+        current: w === thisWeek,
+        tip: weekLabel(w) + ' (' + rangeText(w, addDays(w, 6)) + ')\n' + unitLabel + n + '건',
+      };
+    });
+  }
+
+  function weekNote(points) {
+    const hasCurrent = points.some((p) => p.current);
+    if (hasCurrent) return '주 시작일 기준. 흐린 막대는 진행 중인 주입니다.';
+    return '주 시작일 기준입니다.';
   }
 
   function bindBarLinks(root) {
@@ -466,16 +584,13 @@
     let total = 0;
     sub.byMember.forEach((v) => { done += v.done; total += v.total; });
 
-    let html = '<div class="view-head"><div><h2>회의 브리핑</h2><div class="sub">' +
-      esc(per.label) + ' (' + mdw(per.start) + ' ~ ' + mdw(per.end) + ')</div></div>' +
-      '<div class="toolbar no-print"><button class="btn small" id="print-btn">인쇄 / PDF</button></div></div>';
-    html += periodPicker(per);
-    html += '<div class="section-gap"></div>';
+    const printBtnHtml = '<button class="btn small" id="print-btn" type="button">인쇄 / PDF</button>';
+    let html = viewHead('회의 브리핑', esc(per.label), periodPicker(per, printBtnHtml));
 
-    html += '<div class="kpis">' +
+    html += '<div class="stats">' +
       kpi('일일보고', reports.length, '건', '보고일 ' + sub.days.length + '일') +
-      kpi('보고 제출률', total ? Math.round((done / total) * 100) : '-', total ? '%' : '', done + ' / ' + total + ' (보고일 기준)') +
-      kpi('특이사항', remarks.length, '건', '보고자가 특이사항으로 적은 줄') +
+      kpi('보고 제출률', total ? Math.round((done / total) * 100) : '-', total ? '%' : '', '보고 대상 ' + total + '건 중 ' + done + '건') +
+      kpi('특이사항', remarks.length, '건', '보고자가 특이사항으로 적은 줄', remarks.length > 0) +
       kpi('협조 요청', requests.length, '건', '다른 팀장 이름이 들어간 요청') +
       (S.hasDirectives
         ? kpi('지시/회의록', directives.length + minutes.length, '건', '지시 ' + directives.length + ', 회의록 ' + minutes.length)
@@ -562,9 +677,11 @@
       '<ul class="plain" style="margin-top:6px">' + rows.join('') + '</ul></div>';
   }
 
-  function kpi(label, value, unit, note) {
-    return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="value num">' + esc(value) +
-      (unit ? '<small>' + esc(unit) + '</small>' : '') + '</div><div class="note">' + esc(note || '') + '</div></div>';
+  // 숫자 띠의 한 칸. warn 이면 숫자를 호박색으로.
+  function kpi(label, value, unit, note, warn) {
+    return '<div class="stat' + (warn ? ' warn' : '') + '"><div class="v">' + esc(value) +
+      (unit ? '<small>' + esc(unit) + '</small>' : '') + '</div><div class="l">' + esc(label) + '</div>' +
+      (note ? '<div class="n">' + esc(note) + '</div>' : '') + '</div>';
   }
 
   // 기간 시작일부터 3주 안의 날짜가 적힌 일정 줄. 같은 문장은 한 번만.
@@ -607,13 +724,13 @@
     const dayMap = S.reportsByDay.get(day) || new Map();
     const isWorkday = S.workdaySet.has(day);
 
-    let html = '<div class="view-head"><div><h2>' + (+day.slice(5, 7)) + '월 ' + (+day.slice(8, 10)) + '일 (' + wd(day) + ')</h2>' +
-      '<div class="sub">' + weekLabel(weekStart(day)) + ', 일일보고 ' + dayMap.size + '명' + (isWorkday ? '' : ' (보고일 아님)') + '</div></div>' +
-      '<div class="toolbar no-print">' +
-      '<button class="btn small" id="day-prev"' + (prev ? '' : ' disabled') + '>이전 날</button>' +
-      '<input type="date" id="day-pick" value="' + day + '" min="' + S.allDays[0] + '" max="' + S.anchor + '">' +
-      '<button class="btn small" id="day-next"' + (next ? '' : ' disabled') + '>다음 날</button>' +
-      '</div></div>';
+    const dayTools = '<div class="period-row no-print">' +
+      '<button class="btn small" id="day-prev" type="button"' + (prev ? '' : ' disabled') + '>이전 날</button>' +
+      '<input type="date" id="day-pick" value="' + day + '" min="' + S.allDays[0] + '" max="' + S.anchor + '" aria-label="날짜">' +
+      '<button class="btn small" id="day-next" type="button"' + (next ? '' : ' disabled') + '>다음 날</button>' +
+      '</div>';
+    let html = viewHead((+day.slice(5, 7)) + '월 ' + (+day.slice(8, 10)) + '일 (' + wd(day) + ')',
+      weekLabel(weekStart(day)) + ', 일일보고 ' + dayMap.size + '명' + (isWorkday ? '' : ' (보고일 아님)'), dayTools);
 
     // 날짜 띠
     const strip = S.allDays.map((d) => {
@@ -621,7 +738,7 @@
       const cls = (d === day ? ' on' : '') + (S.workdaySet.has(d) ? '' : ' off');
       return '<a class="day-chip' + cls + '" href="#day/' + d + '" data-day="' + d + '" data-tip="' + mdw(d) + ' 보고 ' + n + '명"><b>' + md(d) + '</b>' + wd(d) + '</a>';
     }).join('');
-    html += '<div class="day-strip no-print" id="day-strip">' + strip + '</div><div class="section-gap"></div>';
+    html += '<div class="day-strip no-print" id="day-strip">' + strip + '</div>';
     html += '<section class="card">' + renderAiSummary(S.summaries.days[day], 'day', { key: day, label: mdw(day) + ' 일일 요약', foldMembers: true }) + '</section>';
 
     // 보고
@@ -634,21 +751,21 @@
     const missing = S.reporters.filter((m) => !dayMap.has(m.id));
     let missingHtml = '';
     if (isWorkday && missing.length) {
-      missingHtml = '<div class="missing small" style="margin-bottom:12px"><span class="muted">보고 없음</span>' +
-        missing.map((m) => whoHtml(m.id)).join(' ') + '</div>';
+      missingHtml = '<div class="missing"><span class="muted">보고 없음</span>' +
+        missing.map((m) => '<a class="tag" href="#member/' + encodeURIComponent(m.id) + '">' + esc(m.name) + (m.team ? ' ' + esc(m.team) : '') + '</a>').join('') + '</div>';
     }
-    html += '<section class="card"><div class="card-head"><h3>일일보고</h3><span class="count">' + reportCards.length + '건</span></div>' +
-      missingHtml + (reportCards.length ? reportCards.join('') : '<div class="empty">이 날 올라온 일일보고가 없습니다.</div>') + '</section>';
+    html += '<div class="raw-h"><h3>일일보고</h3><span class="c">' + reportCards.length + '건</span></div>' +
+      missingHtml + (reportCards.length ? reportCards.join('') : '<div class="empty">이 날 올라온 일일보고가 없습니다.</div>');
 
     const directives = msgs.filter((m) => m.k === 'directive' || m.k === 'minutes');
     if (directives.length) {
-      html += '<section class="card"><div class="card-head"><h3>' + (S.hasDirectives ? '지시 / 회의록' : '회의록') + '</h3><span class="count">' + directives.length + '건</span></div>' +
-        directives.map((m) => msgCard(m)).join('') + '</section>';
+      html += '<div class="raw-h"><h3>' + (S.hasDirectives ? '지시 / 회의록' : '회의록') + '</h3><span class="c">' + directives.length + '건</span></div>' +
+        directives.map((m) => msgCard(m)).join('');
     }
     const chats = msgs.filter((m) => m.k === 'chat');
     if (chats.length) {
-      html += '<section class="card"><details class="fold"' + (chats.length <= 4 ? ' open' : '') + '><summary><span class="grow"><b>그 밖의 대화</b></span><span class="muted small">' + chats.length + '건</span></summary><div class="fold-body">' +
-        chats.map((m) => msgCard(m, { showKeywords: false })).join('') + '</div></details></section>';
+      html += '<div class="section-gap"></div><details class="fold wk"' + (chats.length <= 4 ? ' open' : '') + '><summary><b>그 밖의 대화</b><span>' + chats.length + '건</span></summary><div class="fold-body">' +
+        chats.map((m) => msgCard(m, { showKeywords: false })).join('') + '</div></details>';
     }
 
     root.innerHTML = html;
@@ -682,45 +799,48 @@
     const sub = submissionStats(per, [id]).byMember.get(id);
     const isReporter = p.role === 'member';
 
-    let html = '<div class="view-head"><div><h2>' + esc(p.name) + (p.title ? ' ' + esc(p.title) : '') + '</h2><div class="sub">' +
-      esc(p.team || '') + (p.speaker && p.speaker !== p.name ? ' / 대화명 ' + esc(p.speaker) : '') + '</div></div></div>';
+    S.viewMemberId = id;
+    const subParts = [];
+    if (p.team) subParts.push(esc(p.team));
+    if (p.speaker && p.speaker !== p.name) subParts.push('대화명 ' + esc(p.speaker));
+    let html = viewHead(esc(p.name) + (p.title ? '<small>' + esc(p.title) + '</small>' : ''), subParts.join(', '), periodPicker(per), 'big');
     html += '<div class="member-chips no-print">' + chips + '</div>';
-    html += periodPicker(per) + '<div class="section-gap"></div>';
 
-    html += '<div class="kpis">' +
+    html += '<div class="stats">' +
       (isReporter
-        ? kpi('일일보고', reports.length, '건', '') + kpi('보고 제출률', sub.total ? Math.round((sub.done / sub.total) * 100) : '-', sub.total ? '%' : '', sub.done + ' / ' + sub.total + ' 보고일')
+        ? kpi('일일보고', reports.length, '건', '') + kpi('보고 제출률', sub.total ? Math.round((sub.done / sub.total) * 100) : '-', sub.total ? '%' : '', '보고일 ' + sub.total + '일 중 ' + sub.done + '일')
         : kpi('메시지', mine.length, '건', '') + kpi('지시/공지', mine.filter((m) => m.k === 'directive').length, '건', '')) +
-      kpi('특이사항', remarks.length, '건', '') +
+      kpi('특이사항', remarks.length, '건', '', remarks.length > 0) +
       kpi('받은 협조 요청', received.length, '건', '') +
       kpi('보낸 협조 요청', sent.length, '건', '') +
       '</div>';
 
     // 주별 보고 수
     const weeks = S.weeks.filter((w) => w <= per.end && addDays(w, 6) >= per.start);
-    const points = weeks.map((w) => {
-      const n = mine.filter((m) => m.w === w && (isReporter ? m.k === 'report' : true)).length;
-      return { label: weekLabel(w), short: weekLabel(w).replace(' ', ''), value: n, tip: weekLabel(w) + ' (' + weekRangeText(w) + ')\n' + (isReporter ? '일일보고 ' : '메시지 ') + n + '건' };
-    });
+    const countInWeek = (w) => mine.filter((m) => m.w === w && (isReporter ? m.k === 'report' : true)).length;
+    const points = weekPoints(weeks, countInWeek, isReporter ? '일일보고 ' : '메시지 ');
 
-    // 키워드
+    // 키워드: 위 8개만 보이고 나머지는 전체 보기로 펼친다
     const kwCount = new Map();
     for (const m of mine) for (const k of (m.kw || [])) kwCount.set(k, (kwCount.get(k) || 0) + 1);
-    const kwPills = Array.from(kwCount.entries()).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, n]) => {
+    const kwSorted = Array.from(kwCount.entries()).sort((a, b) => b[1] - a[1]);
+    const kwMax = kwSorted.length ? kwSorted[0][1] : 1;
+    const kwRows = kwSorted.map(([k, n], i) => {
       const kw = S.keywords[k];
-      return '<a class="pill" href="#project/' + encodeURIComponent(kw.name) + '">' + esc(kw.name) + ' <span class="n">' + n + '</span></a>';
+      const width = Math.max(2, Math.round((n / kwMax) * 100));
+      return '<li' + (i >= 8 ? ' class="extra"' : '') + '><a class="nm" href="#project/' + encodeURIComponent(kw.name) + '" title="' + esc(kw.name) + '">' + esc(kw.name) + '</a>' +
+        '<span class="tr" data-tip="' + esc(kw.name + ': ' + n + '건') + '"><i style="width:' + width + '%"></i></span><span class="ct">' + n + '</span></li>';
     }).join('');
-
-    html += '<div class="grid two">';
-    html += '<section class="card"><div class="card-head"><h3>주별 ' + (isReporter ? '일일보고' : '메시지') + ' 수</h3><span class="count">막대에 마우스를 올리면 기간 표시</span></div>' + barsChart(points) + '</section>';
-    html += '<section class="card"><div class="card-head"><h3>자주 다룬 프로젝트</h3><span class="count">언급한 메시지 수</span></div>' +
-      (kwPills ? '<div class="pills">' + kwPills + '</div>' : '<div class="empty">키워드 사전에 있는 프로젝트 언급이 없습니다.</div>') + '</section>';
-    html += '</div><div class="section-gap"></div>';
+    const kwMore = kwSorted.length > 8 ? '<button class="more no-print" type="button" id="proj-all">' + kwSorted.length + '개 전체 보기</button>' : '';
+    const barsPanel = '<section class="card o-bars"><div class="card-head"><h3>주별 ' + (isReporter ? '일일보고' : '메시지') + '</h3><span class="count">건</span></div>' +
+      barsChart(points, { note: weekNote(points) }) + '</section>';
+    const projPanel = '<section class="card o-proj"><div class="card-head"><h3>자주 다룬 프로젝트</h3><span class="count">언급 수</span></div>' +
+      (kwRows ? '<ul class="proj" id="proj-list">' + kwRows + '</ul>' + kwMore : '<div class="empty">키워드 사전에 있는 프로젝트 언급이 없습니다.</div>') + '</section>';
 
     // AI 흐름: 기간이 2주 이내면 일별, 그보다 길면 주별
     const spanDays = Math.round((parseIso(per.end) - parseIso(per.start)) / 86400000) + 1;
     const useDaily = spanDays <= 14;
-    let flow = [];
+    const flow = [];
     if (useDaily) {
       const dayKeys = S.allDays.filter((d) => inPeriod(d, per)).slice().reverse();
       for (const d of dayKeys) {
@@ -728,7 +848,7 @@
         if (!s || !s.byMember) continue;
         const entry = s.byMember.find((b) => b.id === id);
         if (!entry) continue;
-        flow.push('<li><div>' + esc(entry.text) + '</div><div class="item-meta">' + dayLink(d) + '</div></li>');
+        flow.push('<li><div class="wk"><a href="#day/' + d + '"><b>' + mdw(d) + '</b></a><span>일일 요약</span></div><p>' + esc(entry.text) + '</p></li>');
       }
     } else {
       for (const w of weeks.slice().reverse()) {
@@ -736,17 +856,16 @@
         if (!s || !s.byMember) continue;
         const entry = s.byMember.find((b) => b.id === id);
         if (!entry) continue;
-        flow.push('<li><div>' + esc(entry.text) + '</div><div class="item-meta"><a href="#summary/week/' + w + '">' + weekLabel(w) + ' (' + weekRangeText(w) + ')</a></div></li>');
+        flow.push('<li><div class="wk"><a href="#summary/week/' + w + '"><b>' + weekLabel(w) + '</b></a><span>' + rangeText(w, addDays(w, 6)) + '</span></div><p>' + esc(entry.text) + '</p></li>');
       }
     }
     const flowTitle = useDaily ? '일별 흐름' : '주간 흐름';
-    const flowNote = useDaily ? '' : ' <span class="small muted">기간을 2주 이내로 고르면 일별로 나옵니다</span>';
-    html += '<div class="grid two">';
-    html += '<section class="card"><div class="card-head"><h3>' + flowTitle + flowNote + '</h3><span class="count"><span class="ai-tag">AI 요약</span></span></div>' +
-      listOrEmpty(flow, '이 기간의 AI 요약이 없습니다.') + '</section>';
-    html += '<section class="card"><div class="card-head"><h3>받은 협조 요청</h3><span class="count">' + received.length + '건</span></div>' +
+    const flowNote = useDaily ? '' : '<p class="bars-note">기간을 2주 이내로 고르면 하루 단위로 나옵니다.</p>';
+    const flowPanel = '<section class="card o-flow"><div class="card-head"><h3>' + flowTitle + '</h3><span class="ai-tag">AI 요약</span></div>' +
+      (flow.length ? '<ul class="flow">' + flow.join('') + '</ul>' : '<div class="empty">이 기간의 AI 요약이 없습니다.</div>') + flowNote + '</section>';
+    const reqPanel = '<section class="card o-req"><div class="card-head"><h3>받은 협조 요청</h3><span class="count">' + received.length + '건</span></div>' +
       listOrEmpty(received.slice().reverse().map((it) => itemRow(it)), '다른 팀장이 이름을 들어 요청한 내용이 없습니다.') + '</section>';
-    html += '</div><div class="section-gap"></div>';
+    html += '<div class="cols"><div class="col">' + flowPanel + reqPanel + '</div><div class="col">' + barsPanel + projPanel + '</div></div>';
 
     // 원문 타임라인
     const byWeek = new Map();
@@ -757,15 +876,22 @@
     const weekKeys = Array.from(byWeek.keys()).sort().reverse();
     const folds = weekKeys.map((w, i) => {
       const list = byWeek.get(w).sort((a, b) => (a.d + a.t < b.d + b.t ? 1 : -1));
-      return '<details class="fold"' + (i === 0 ? ' open' : '') + '><summary><span class="grow"><b>' + weekLabel(w) + '</b> <span class="muted small">' + weekRangeText(w) + '</span></span><span class="muted small">' + list.length + '건</span></summary>' +
-        '<div class="fold-body">' + list.map((m) => msgCard(m, { showDate: true, clamp: true })).join('') + '</div></details>';
+      return '<details class="fold wk"' + (i === 0 ? ' open' : '') + '><summary><b>' + weekLabel(w) + '</b><span>' + rangeText(w, addDays(w, 6)) + ', ' + list.length + '건</span></summary>' +
+        '<div class="fold-body">' + list.map((m) => msgCard(m, { showDate: true, clamp: true, samePerson: true })).join('') + '</div></details>';
     });
-    html += '<section class="card"><div class="card-head"><h3>보고 원문</h3><span class="count">' + mine.length + '건</span></div>' +
-      (folds.length ? folds.join('') : '<div class="empty">이 기간 메시지가 없습니다.</div>') + '</section>';
+    html += '<div class="raw-h"><h3>보고 원문</h3><span class="c">' + mine.length + '건, 최신순</span></div>' +
+      (folds.length ? folds.join('') : '<div class="empty">이 기간 메시지가 없습니다.</div>');
 
     root.innerHTML = html;
     bindPeriodPicker(root, 'member', [id], {});
     bindUnclamp(root);
+    const projAll = $('#proj-all', root);
+    if (projAll) {
+      projAll.addEventListener('click', () => {
+        $('#proj-list', root).classList.add('open');
+        projAll.remove();
+      });
+    }
   }
 
   // ============================================================ 4. 일간/주간/월간 요약
@@ -805,14 +931,15 @@
 
     const segBtn = (t, text) => '<button class="' + (type === t ? 'on' : '') + '" data-type="' + t + '">' + text + '</button>';
     const dayLinkBtn = type === 'day' ? '<a class="btn small" href="#day/' + key + '">원문 보기</a>' : '';
-    let html = '<div class="view-head"><div><h2>' + titles[type] + '</h2><div class="sub">' + esc(label) + '</div></div>' +
-      '<div class="toolbar no-print">' +
-      '<div class="seg">' + segBtn('day', '일간') + segBtn('week', '주간') + segBtn('month', '월간') + '</div>' + dayLinkBtn +
-      '<button class="btn small" id="sum-older"' + (older ? '' : ' disabled') + '>이전</button>' +
+    const sumTools = '<div class="period-row no-print">' +
+      '<div class="seg">' + segBtn('day', '일간') + segBtn('week', '주간') + segBtn('month', '월간') + '</div>' +
+      '<button class="btn small" id="sum-older" type="button"' + (older ? '' : ' disabled') + '>이전</button>' +
       '<select id="sum-pick" aria-label="기간 선택">' + options + '</select>' +
-      '<button class="btn small" id="sum-newer"' + (newer ? '' : ' disabled') + '>다음</button>' +
-      '<a class="btn small" href="' + buildHash('brief', [], { from: per.start, to: per.end }) + '">이 기간 브리핑</a>' +
-      '</div></div>';
+      '<button class="btn small" id="sum-newer" type="button"' + (newer ? '' : ' disabled') + '>다음</button>' +
+      '</div>' +
+      '<div class="period-row no-print">' + dayLinkBtn +
+      '<a class="btn small" href="' + buildHash('brief', [], { from: per.start, to: per.end }) + '">이 기간 브리핑</a></div>';
+    let html = viewHead(titles[type], esc(label), sumTools);
 
     html += '<section class="card">' + renderAiSummary(store[key], type, { key: key, label: label }) + '</section>';
     html += '<div class="section-gap"></div>';
@@ -877,7 +1004,7 @@
     const max = active.length ? active[0].list.length : 1;
     let listHtml = '';
     groups.forEach((list, g) => {
-      listHtml += '<h4 style="margin:12px 0 6px">' + esc(g) + '</h4><div class="hbar-list">';
+      listHtml += '<h4 class="group-h">' + esc(g) + '</h4><div class="hbar-list">';
       listHtml += list.map((s) => {
         const on = selected && s.k.idx === selected.k.idx ? ' on' : '';
         return '<a class="hbar-label' + on + '" href="' + buildHash('project', [s.k.name], params) + '">' + esc(s.k.name) + '</a>' +
@@ -887,9 +1014,8 @@
       listHtml += '</div>';
     });
 
-    let html = '<div class="view-head"><div><h2>프로젝트별 보기</h2><div class="sub">고객사, 현장, 과제 이름이 나온 보고를 모아 봅니다. 여러 팀에 흩어진 같은 건을 한 번에 확인할 때 씁니다.</div></div></div>';
-    html += periodPicker(per) + '<div class="section-gap"></div>';
-    html += '<div class="grid" style="grid-template-columns:minmax(0,340px) minmax(0,1fr)" id="proj-grid">';
+    let html = viewHead('프로젝트별 보기', '고객사, 현장, 과제 이름이 나온 보고를 모아 봅니다. 여러 팀에 흩어진 같은 건을 한 번에 확인할 때 씁니다.', periodPicker(per));
+    html += '<div class="proj-grid" id="proj-grid">';
     html += '<section class="card"><div class="card-head"><h3>언급 순위</h3><span class="count">메시지 수</span></div>' +
       (listHtml || '<div class="empty">이 기간에 언급된 프로젝트가 없습니다.</div>') + '</section>';
 
@@ -900,10 +1026,7 @@
       const peoplePills = Array.from(peopleCount.entries()).sort((a, b) => b[1] - a[1]).map(([pid, n]) =>
         '<a class="pill" href="#member/' + encodeURIComponent(pid) + '">' + esc(person(pid).name) + ' <span class="n">' + n + '</span></a>').join('');
       const weeks = S.weeks.filter((w) => w <= per.end && addDays(w, 6) >= per.start);
-      const points = weeks.map((w) => {
-        const n = selected.list.filter((m) => m.w === w).length;
-        return { label: weekLabel(w), short: weekLabel(w).replace(' ', ''), value: n, tip: weekLabel(w) + ' (' + weekRangeText(w) + ')\n' + n + '건' };
-      });
+      const points = weekPoints(weeks, (w) => selected.list.filter((m) => m.w === w).length, '언급 ');
       const terms = [k.name].concat(k.aliases);
       const timeline = selected.list.slice().sort((a, b) => (a.d + a.t < b.d + b.t ? 1 : -1)).map((m) => {
         const lines = m.x.split('\n').filter((l) => { k.regex.lastIndex = 0; return k.regex.test(l); }).map((l) => l.trim()).slice(0, 4);
@@ -918,8 +1041,8 @@
       html += '<section class="card"><div class="card-head"><h3>' + esc(k.name) + '</h3><span class="count">' +
         (k.aliases.length ? '같이 찾는 표기: ' + esc(k.aliases.join(', ')) : '') + '</span></div>' +
         '<div class="pills" style="margin-bottom:12px">' + peoplePills + '</div>' +
-        barsChart(points) +
-        '<div class="section-gap"></div><h4 style="margin-bottom:4px">언급된 줄 (최신순, ' + timeline.length + '건)</h4>' +
+        barsChart(points, { note: weekNote(points) }) +
+        '<div class="section-gap"></div><h4 style="margin-bottom:8px">언급된 줄 (최신순, ' + timeline.length + '건)</h4>' +
         '<ul class="plain" id="proj-lines">' + firstPage + '</ul>' + moreBtn + '</section>';
       S.projectRest = rest;
     }
@@ -933,8 +1056,6 @@
         more.remove();
       });
     }
-    const grid = $('#proj-grid', root);
-    if (window.matchMedia('(max-width: 900px)').matches) grid.style.gridTemplateColumns = 'minmax(0,1fr)';
   }
 
   // ============================================================ 6. 보고 현황
@@ -977,10 +1098,9 @@
     // 날짜별 보고 인원
     const points = days.map((d) => ({ label: mdw(d), short: '', value: S.reportsByDay.get(d).size, tip: mdw(d) + '\n보고 ' + S.reportsByDay.get(d).size + '명 / ' + S.reporters.length + '명', href: '#day/' + d }));
 
-    let html = '<div class="view-head"><div><h2>보고 현황</h2><div class="sub">보고일마다 누가 일일보고를 올렸는지 보여줍니다. 칸을 누르면 그날 보고로 이동합니다.</div></div></div>';
-    html += periodPicker(per) + '<div class="section-gap"></div>';
+    let html = viewHead('보고 현황', '보고일마다 누가 일일보고를 올렸는지 보여줍니다. 칸을 누르면 그날 보고로 이동합니다.', periodPicker(per));
     html += '<section class="card"><div class="heat-wrap"><table class="heat"><thead>' + head1 + head2 + '</thead><tbody>' + body + '</tbody></table></div>' +
-      '<div class="legend"><span><i style="background:var(--seq-2)"></i>보고 있음</span><span><i style="background:var(--seq-0)"></i>보고 없음 (연차, 출장, 회의록 대체 포함)</span></div></section>';
+      '<div class="legend"><span><i style="background:var(--cobalt)"></i>보고 있음</span><span><i style="background:var(--miss)"></i>보고 없음 (연차, 출장, 회의록 대체 포함)</span></div></section>';
     html += '<div class="section-gap"></div>';
     html += '<section class="card"><div class="card-head"><h3>보고일별 보고 인원</h3><span class="count">대상 ' + S.reporters.length + '명</span></div>' + barsChart(points, { showValues: days.length <= 30 }) + '</section>';
     html += '<div class="section-gap"></div>';
@@ -1007,9 +1127,9 @@
     const kindOpts = [['', '전체 종류'], ['report', '일일보고'], ['minutes', '회의록'], ['directive', '지시/공지'], ['chat', '대화']]
       .map(([v, l]) => '<option value="' + v + '"' + (v === kind ? ' selected' : '') + '>' + l + '</option>').join('');
 
-    let html = '<div class="view-head"><div><h2>검색</h2><div class="sub">띄어쓰기로 여러 단어를 넣으면 모두 들어간 메시지만 찾습니다.</div></div></div>';
+    let html = viewHead('검색', '띄어쓰기로 여러 단어를 넣으면 모두 들어간 메시지만 찾습니다.', '');
     html += '<div class="toolbar"><input type="search" id="q" placeholder="예: BNYE 알람" value="' + esc(q) + '" style="flex:1;min-width:200px">' +
-      '<select id="who">' + memberOpts + '</select><select id="kind">' + kindOpts + '</select></div><div class="section-gap"></div>';
+      '<select id="who" aria-label="인원">' + memberOpts + '</select><select id="kind" aria-label="종류">' + kindOpts + '</select></div><div class="section-gap"></div>';
 
     const terms = q.trim().split(/\s+/).filter(Boolean);
     let resultHtml = '';
@@ -1055,7 +1175,7 @@
   // ============================================================ 8. 활용 안내
 
   function renderGuide(root) {
-    const html = '<div class="view-head"><div><h2>활용 안내</h2><div class="sub">회의 종류별로 어떤 화면을 보면 되는지 정리했습니다.</div></div></div>' +
+    const html = viewHead('활용 안내', '회의 종류별로 어떤 화면을 보면 되는지 정리했습니다.', '') +
       '<div class="grid two">' +
       '<section class="card guide"><h3>아침 데일리 미팅</h3><ol>' +
       '<li><b>회의 브리핑</b>에서 <b>최근 보고일</b>을 고릅니다. 전날 AI 일일 요약과 특이사항, 팀 간 협조 요청, 회의록이 한 화면에 모입니다.</li>' +
@@ -1072,12 +1192,13 @@
       '<li><b>보고 현황</b>은 누락 확인용이 아니라 출장, 연차로 비는 날을 파악하는 데 쓰는 편이 좋습니다.</li></ol></section>' +
       '<section class="card guide"><h3>링크 공유</h3><ul>' +
       '<li>주소창의 주소가 지금 보는 화면을 그대로 가리킵니다. 특정 날짜나 사람 화면을 톡방에 링크로 붙이면 받은 사람도 같은 화면을 엽니다.</li>' +
-      '<li>처음 여는 기기에서는 비밀번호를 한 번 입력해야 합니다. 공용 PC에서는 다 본 뒤 오른쪽 위 <b>잠금</b>을 누르세요.</li></ul></section>' +
+      '<li>처음 여는 기기에서는 비밀번호를 한 번 입력해야 합니다. 공용 PC에서는 다 본 뒤 오른쪽 위 <b>잠금</b>을 누르세요.</li>' +
+      '<li>왼쪽 팀장 목록의 막대는 최근 10 보고일의 보고 여부입니다. 이름을 누르면 그 사람 화면으로 갑니다.</li></ul></section>' +
       '<section class="card guide"><h3>데이터를 읽을 때 주의할 점</h3><ul>' +
       '<li>보고 분류, 특이사항, 협조 요청, 일정은 문장 규칙으로 자동 추출한 결과입니다. 빠지거나 잘못 잡힌 줄이 있을 수 있으니 판단은 원문 기준으로 합니다.</li>' +
       '<li>AI 요약은 원문을 바탕으로 쓰지만 놓친 내용이 있을 수 있습니다. 중요한 건은 원문 링크로 확인하세요.</li>' +
       '<li>시각은 모두 한국 시간입니다. 카톡을 내보낸 PC가 해외 시간대여도 한국 시간으로 바꿔 표시합니다.</li>' +
-      '<li>보고 머리글 형식을 "날짜 - 팀명 이름"으로 맞추면 자동 분류가 더 정확해집니다. 특이사항은 "특이사항" 줄 아래에 적어 주세요.</li></ul></section>' +
+      '<li>보고 머리글을 날짜, 팀명, 이름 순서(예: 11/5 - SW2팀 홍길동입니다)로 맞추면 자동 분류가 더 정확해집니다. 특이사항은 보고 끝에 특이사항 항목을 따로 두고 그 아래에 적어 주세요.</li></ul></section>' +
       '<section class="card guide"><h3>데이터 갱신</h3><ul>' +
       '<li>담당자가 카톡 대화를 내보내 업데이트하면 1~2분 뒤 이 페이지에 반영됩니다. 오른쪽 위에 마지막 갱신 시각이 나옵니다.</li>' +
       '<li>AI 요약은 업데이트할 때 새로 생긴 주차만 추가로 작성합니다.</li></ul></section>' +
@@ -1135,17 +1256,34 @@
 
   function start(bundle) {
     prepare(bundle);
-    document.title = bundle.title || '팀장 일일보고';
-    $('#app-title').textContent = bundle.title || '팀장 일일보고';
+    const title = bundle.title || '팀장 일일보고';
+    document.title = title;
+    // "○○ 팀장 일일보고" 형태면 앞부분을 아랫줄로 나눈다
+    const titleMatch = title.match(/^(.+?)\s*(팀장 일일보고)$/);
+    if (titleMatch) {
+      $('#brand b').textContent = titleMatch[2];
+      $('#brand span').textContent = titleMatch[1];
+    } else {
+      $('#brand b').textContent = title;
+      $('#brand span').textContent = '';
+    }
     $('#app-range').textContent = '데이터 ' + md(bundle.range.first) + ' ~ ' + mdw(bundle.range.last) + ', 갱신 ' + formatKst(bundle.generatedAt);
     $('#gate').classList.add('hidden');
     $('#app').classList.remove('hidden');
-    $$('#tabs .tab').forEach((t) => t.addEventListener('click', () => go(t.dataset.view, [], {})));
-    $('#logout').addEventListener('click', () => {
+    $$('#tabs .nav-item').forEach((t) => t.addEventListener('click', (e) => {
+      e.preventDefault();
+      go(t.dataset.view, [], {});
+    }));
+    $$('[data-logout]').forEach((b) => b.addEventListener('click', () => {
       storageRemove(PW_KEY);
       location.hash = '';
       location.reload();
+    }));
+    // Ctrl+P 로 인쇄해도 접힌 내용이 모두 나오도록
+    window.addEventListener('beforeprint', () => {
+      $$('#view details').forEach((d) => { d.open = true; });
     });
+    buildRail();
     window.addEventListener('hashchange', render);
     setupTooltip();
     render();

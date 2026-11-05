@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>팀장 일일보고</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Crect x='7' y='17' width='4' height='8' rx='1' fill='white'/%3E%3Crect x='14' y='11' width='4' height='14' rx='1' fill='white'/%3E%3Crect x='21' y='7' width='4' height='18' rx='1' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=mw3f8cfz">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f48c6'/%3E%3Crect x='7' y='17' width='4' height='8' rx='1' fill='white'/%3E%3Crect x='14' y='11' width='4' height='14' rx='1' fill='white'/%3E%3Crect x='21' y='7' width='4' height='18' rx='1' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+  <link rel="stylesheet" href="style.css?v=mw3f8reb">
 </head>
 <body>
   <section id="gate" class="gate">
@@ -21,33 +22,40 @@
   </section>
 
   <div id="app" class="hidden">
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="title-row">
-          <h1 id="app-title">팀장 일일보고</h1>
-          <div class="title-meta">
-            <span id="app-range"></span>
-            <button id="logout" class="btn small" type="button">잠금</button>
-          </div>
+    <div class="shell">
+      <aside class="rail" id="rail">
+        <div class="rail-top">
+          <div class="brand" id="brand"><b>팀장 일일보고</b><span></span></div>
+          <button class="btn small rail-lock" type="button" data-logout>잠금</button>
         </div>
-        <nav class="tabs" id="tabs">
-          <button class="tab" data-view="brief">회의 브리핑</button>
-          <button class="tab" data-view="day">일자별</button>
-          <button class="tab" data-view="member">인원별</button>
-          <button class="tab" data-view="summary">일간/주간/월간 요약</button>
-          <button class="tab" data-view="project">프로젝트</button>
-          <button class="tab" data-view="status">보고 현황</button>
-          <button class="tab" data-view="search">검색</button>
-          <button class="tab" data-view="guide">활용 안내</button>
+        <nav class="nav" id="tabs" aria-label="화면 메뉴">
+          <a class="nav-item" data-view="brief" href="#brief"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5 6h6M5 8.5h6M5 11h3.5"/></svg><span>회의 브리핑</span></a>
+          <a class="nav-item" data-view="day" href="#day"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="10" rx="2"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/></svg><span>일자별</span></a>
+          <a class="nav-item" data-view="member" href="#member"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.5" r="2.6"/><path d="M3 13.5c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/></svg><span>인원별</span></a>
+          <a class="nav-item" data-view="summary" href="#summary"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13V8M6.5 13V4M10 13V7M13.5 13V3"/></svg><span>일간/주간/월간 요약</span></a>
+          <a class="nav-item" data-view="project" href="#project"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5l5.5-3 5.5 3-5.5 3z"/><path d="M2.5 8.5l5.5 3 5.5-3M2.5 11l5.5 3 5.5-3"/></svg><span>프로젝트</span></a>
+          <a class="nav-item" data-view="status" href="#status"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4" rx="1"/><rect x="9.5" y="2.5" width="4" height="4" rx="1"/><rect x="2.5" y="9.5" width="4" height="4" rx="1"/><rect x="9.5" y="9.5" width="4" height="4" rx="1"/></svg><span>보고 현황</span></a>
+          <a class="nav-item" data-view="search" href="#search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2l3.3 3.3"/></svg><span>검색</span></a>
+          <a class="nav-item" data-view="guide" href="#guide"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 7.3v3.7M8 5.1v.2"/></svg><span>활용 안내</span></a>
         </nav>
-      </div>
-    </header>
-    <main id="view"></main>
+        <div class="rail-head"><b id="rail-count">팀장</b><span>최근 10 보고일</span></div>
+        <ul class="people" id="rail-people"></ul>
+        <p class="rail-foot">막대 하나가 보고일 하루입니다. 회색은 그날 보고가 없던 날입니다.</p>
+      </aside>
+
+      <main class="main">
+        <div class="crumb">
+          <span id="crumb-title">회의 브리핑</span>
+          <span class="upd"><span id="app-range"></span><button id="logout" class="btn small" type="button" data-logout>잠금</button></span>
+        </div>
+        <div id="view"></div>
+      </main>
+    </div>
   </div>
 
   <div id="tip" class="tip" role="tooltip"></div>
 
-  <script src="data.enc.js?v=mw3f8cfz"></script>
-  <script src="app.js?v=mw3f8cfz"></script>
+  <script src="data.enc.js?v=mw3f8reb"></script>
+  <script src="app.js?v=mw3f8reb"></script>
 </body>
 </html>
