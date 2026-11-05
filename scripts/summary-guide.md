@@ -1,18 +1,45 @@
 # AI 요약 작성 기준
 
-대시보드의 주간/월간 요약은 이 기준으로 작성한다. 요약을 새로 쓰거나 고칠 때(`/update-dashboard`) 항상 이 문서를 먼저 읽는다.
+대시보드의 일일/주간/월간 요약은 이 기준으로 작성한다. 요약을 새로 쓰거나 고칠 때(`/update-dashboard`) 항상 이 문서를 먼저 읽는다.
 
 ## 입력과 출력
 
-- 원문: `private/dump/weeks/<월요일날짜>.txt`, `private/dump/months/<YYYY-MM>.txt`
+- 원문: `private/dump/days/<YYYY-MM-DD>.txt`, `private/dump/weeks/<월요일날짜>.txt`, `private/dump/months/<YYYY-MM>.txt`
   - `node scripts/build.mjs --dump` 를 실행하면 만들어진다.
-  - 무엇을 써야 하는지는 `private/dump/todo.json` 에 있다.
-- 인원 id: `private/members.json` 의 `id` 값 (예: 박인권 = `pik`)
+  - 무엇을 써야 하는지는 `private/dump/todo.json` 에 있다 (`days`, `weeks`, `months`).
+  - 주간 원문은 그 주의 일별 원문을 날짜(`## YYYY-MM-DD`)별로 이어 붙인 것이라, 주간 파일 하나를 읽으면 그 주 일일 요약도 함께 쓸 수 있다.
+  - members.json 에서 `exclude` 로 지정한 사람(현재 조상현, 박경수)의 메시지는 원문에 들어 있지 않다. 다른 사람 보고에 그 이름이 나오는 것은 그 사람 보고 내용이므로 그대로 써도 된다.
+- 인원 id: `private/members.json` 의 `id` 값 (예: 박인권 = `pik`). exclude 인원의 id 는 쓰지 않는다.
 - 출력: 기간마다 JSON 파일 하나를 `private/summary-parts/` 에 저장한다.
+  - 일일: `day-<YYYY-MM-DD>.json` (예: `day-2026-09-01.json`)
   - 주간: `week-<월요일날짜>.json` (예: `week-2026-08-31.json`)
   - 월간: `month-<YYYY-MM>.json` (예: `month-2026-09.json`)
   - 다음 빌드 때 `private/summaries.json` 으로 자동 병합된다.
 - 파일은 UTF-8, JSON 문법을 지킨다. 저장 후 `node -e "JSON.parse(require('fs').readFileSync('파일','utf8'))"` 로 문법을 확인한다.
+
+## 일일 요약 형식
+
+```json
+{
+  "headline": "그날을 한 문장으로. 40자 안팎",
+  "points": ["그날 사업부 전체에서 중요한 일 3~5개"],
+  "byMember": [
+    { "id": "pik", "text": "그 사람의 그날 핵심 한두 문장" }
+  ],
+  "issues": [
+    { "text": "문제나 리스크 한 줄", "owner": "kds", "status": "진행중" }
+  ],
+  "followUps": ["다음 보고일에 확인할 일, 다음 날 예정된 일"]
+}
+```
+
+- 아침 데일리 미팅에서 "어제 무슨 일이 있었나"를 1분 안에 파악하는 용도다. 주간 요약보다 짧고 구체적으로 쓴다.
+- `points`: 수주, 출하, 장비 이상, 고객 요청, 일정 변경처럼 회의에서 말할 만한 것. 매일 반복되는 일상 업무("~ 지속 진행")는 넣지 않는다.
+- `byMember`: 그날 보고가 있는 사람만. 보고 내용을 다 옮기지 말고 핵심만 한두 문장.
+- `issues`: 그날 새로 생겼거나 상태가 바뀐 문제만. 없으면 빈 배열.
+- `followUps`: 원문에 "명일", "내일", 날짜가 적힌 예정이나 확인이 필요한 일. 없으면 빈 배열.
+- 주말처럼 보고가 한두 건인 날은 `headline` 과 `points` 1~2개, `byMember` 만 써도 된다.
+- 그날 원문이 회의록뿐이면 회의에서 정한 내용을 `points` 에 쓴다.
 
 ## 주간 요약 형식
 

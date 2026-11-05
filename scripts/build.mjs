@@ -183,16 +183,18 @@ function compactMessage(msg, index) {
 }
 
 function periodCounts(messages) {
+  const days = {};
   const weeks = {};
   const months = {};
   for (const m of messages) {
     if (m.kind === 'media' || m.kind === 'ack') continue;
     const w = weekStart(m.day);
     const mo = m.day.slice(0, 7);
+    days[m.day] = (days[m.day] || 0) + 1;
     weeks[w] = (weeks[w] || 0) + 1;
     months[mo] = (months[mo] || 0) + 1;
   }
-  return { weeks, months };
+  return { days, weeks, months };
 }
 
 async function encrypt(plainText, password, iterations) {
@@ -225,14 +227,18 @@ const KIND_LABEL = { report: '일일보고', minutes: '회의록', directive: '�
 
 function writeDump(bundle, rawMessages, memberById, summaries, counts) {
   // 기존 파일은 지우지 않고 같은 이름으로 덮어쓴다
+  fs.mkdirSync(path.join(DUMP_DIR, 'days'), { recursive: true });
   fs.mkdirSync(path.join(DUMP_DIR, 'weeks'), { recursive: true });
   fs.mkdirSync(path.join(DUMP_DIR, 'months'), { recursive: true });
   writeJson(path.join(DUMP_DIR, 'bundle.json'), bundle);
 
+  const byDay = new Map();
   const byWeek = new Map();
   const byMonth = new Map();
   for (const m of rawMessages) {
     if (m.kind === 'media' || m.kind === 'ack') continue;
+    if (!byDay.has(m.day)) byDay.set(m.day, []);
+    byDay.get(m.day).push(m);
     const w = weekStart(m.day);
     if (!byWeek.has(w)) byWeek.set(w, []);
     byWeek.get(w).push(m);
@@ -257,7 +263,16 @@ function writeDump(bundle, rawMessages, memberById, summaries, counts) {
     return lines.join('\n');
   };
 
-  const todo = { weeks: [], months: [] };
+  const todo = { days: [], weeks: [], months: [] };
+  for (const [d, list] of byDay) {
+    const head = `# ${d} (${weekdayOf(d)}) 메시지 ${list.length}건`;
+    fs.writeFileSync(path.join(DUMP_DIR, 'days', d + '.txt'), head + '\n' + renderDays(list) + '\n', 'utf8');
+    const existing = summaries.days?.[d];
+    if (!existing || (existing.basis?.count || 0) !== counts.days[d]) {
+      todo.days.push({ key: d, label: `${+d.slice(5, 7)}/${+d.slice(8)}(${weekdayOf(d)})`, count: counts.days[d], file: `private/dump/days/${d}.txt` });
+    }
+  }
+  todo.days.sort((a, b) => (a.key < b.key ? -1 : 1));
   for (const [w, list] of byWeek) {
     const end = addDays(w, 6);
     const head = `# ${weekLabel(w)} (${w} ~ ${end}) 메시지 ${list.length}건`;
@@ -286,11 +301,12 @@ function writeDump(bundle, rawMessages, memberById, summaries, counts) {
 function mergeSummaryParts(summaries, counts) {
   const partsDir = path.join(PRIVATE, 'summary-parts');
   if (!fs.existsSync(partsDir)) return 0;
+  summaries.days = summaries.days || {};
   summaries.weeks = summaries.weeks || {};
   summaries.months = summaries.months || {};
   let merged = 0;
   for (const name of fs.readdirSync(partsDir)) {
-    const m = name.match(/^(week|month)-(\d{4}-\d{2}(?:-\d{2})?)\.json$/);
+    const m = name.match(/^(day|week|month)-(\d{4}-\d{2}(?:-\d{2})?)\.json$/);
     if (!m) continue;
     const file = path.join(partsDir, name);
     let part;
@@ -300,13 +316,20 @@ function mergeSummaryParts(summaries, counts) {
       console.warn(`  [주의] ${name} JSON 문법 오류로 건너뜀: ${err.message}`);
       continue;
     }
-    const isWeek = m[1] === 'week';
+    const kind = m[1];
     const key = m[2];
-    const count = isWeek ? counts.weeks[key] : counts.months[key];
-    part.basis = { count: count || 0 };
+    let store = summaries.months;
+    let countMap = counts.months;
+    if (kind === 'day') {
+      store = summaries.days;
+      countMap = counts.days;
+    } else if (kind === 'week') {
+      store = summaries.weeks;
+      countMap = counts.weeks;
+    }
+    part.basis = { count: countMap[key] || 0 };
     part.generatedAt = new Date().toISOString();
-    if (isWeek) summaries.weeks[key] = part;
-    else summaries.months[key] = part;
+    store[key] = part;
     // 병합한 조각은 지우지 않고 보관 폴더로 옮겨 둔다 (요약 이력 백업 겸용)
     const archiveDir = path.join(PRIVATE, 'summary-archive');
     fs.mkdirSync(archiveDir, { recursive: true });
@@ -334,7 +357,8 @@ async function main() {
   const members = readJson(path.join(PRIVATE, 'members.json'), null)?.members;
   if (!members) fail('private/members.json 이 없습니다. 인원 매핑 파일을 먼저 만드세요.');
   const keywords = readJson(path.join(PRIVATE, 'keywords.json'), { keywords: [] }).keywords;
-  const summaries = readJson(path.join(PRIVATE, 'summaries.json'), { weeks: {}, months: {} });
+  const summaries = readJson(path.join(PRIVATE, 'summaries.json'), { days: {}, weeks: {}, months: {} });
+  summaries.days = summaries.days || {};
 
   const pwFile = path.join(PRIVATE, 'password.txt');
   if (!fs.existsSync(pwFile)) fail('private/password.txt 가 없습니다. 메모장으로 열람 비밀번호 한 줄을 적어 저장하세요.');
@@ -349,13 +373,20 @@ async function main() {
     console.log(`  읽음: ${s.file} (시간대 ${s.timeZone}, 메시지 ${s.messages}건, 신규 ${s.added}건)`);
   }
 
-  const { messages, unknownSpeakers } = processMessages(rawMessages, members, keywords);
+  // exclude 로 지정한 사람의 메시지는 데이터와 요약에서 완전히 뺀다
+  const excludedSpeakers = new Set(members.filter((m) => m.exclude).map((m) => m.speaker));
+  const activeMembers = members.filter((m) => !m.exclude);
+  const kept = rawMessages.filter((m) => !excludedSpeakers.has(m.speaker));
+  if (excludedSpeakers.size) {
+    console.log(`  제외: ${[...excludedSpeakers].join(', ')} 메시지 ${rawMessages.length - kept.length}건`);
+  }
+  const { messages, unknownSpeakers } = processMessages(kept, activeMembers, keywords);
   if (unknownSpeakers.length) {
     console.warn('  [주의] members.json 에 없는 대화명: ' + unknownSpeakers.join(', '));
     console.warn('         새 인원이면 private/members.json 에 추가하세요. 지금은 대화명 그대로 표시됩니다.');
   }
 
-  const memberById = new Map(members.map((m) => [m.id, m]));
+  const memberById = new Map(activeMembers.map((m) => [m.id, m]));
   const counts = periodCounts(messages);
   const mergedParts = mergeSummaryParts(summaries, counts);
   if (mergedParts) console.log(`  AI 요약 조각 ${mergedParts}개를 private/summaries.json 에 병합`);
@@ -368,7 +399,7 @@ async function main() {
     minReportsForWorkday: settings.minReportsForWorkday,
     range: { first: days[0], last: days[days.length - 1] },
     sources,
-    members: [...members].sort((a, b) => a.order - b.order),
+    members: [...activeMembers].sort((a, b) => a.order - b.order),
     unknownSpeakers,
     keywords,
     counts,
@@ -380,9 +411,10 @@ async function main() {
   for (const m of messages) kinds[m.kind] = (kinds[m.kind] || 0) + 1;
   console.log(`  기간: ${bundle.range.first} ~ ${bundle.range.last}, 메시지 ${messages.length}건`);
   console.log(`  분류: 일일보고 ${kinds.report || 0}, 회의록 ${kinds.minutes || 0}, 지시/공지 ${kinds.directive || 0}, 대화 ${kinds.chat || 0}, 짧은응답/사진 ${(kinds.ack || 0) + (kinds.media || 0)}`);
+  const summaryDays = Object.keys(summaries.days || {}).length;
   const summaryWeeks = Object.keys(summaries.weeks || {}).length;
   const summaryMonths = Object.keys(summaries.months || {}).length;
-  console.log(`  AI 요약: 주간 ${summaryWeeks}개, 월간 ${summaryMonths}개 반영`);
+  console.log(`  AI 요약: 일일 ${summaryDays}개, 주간 ${summaryWeeks}개, 월간 ${summaryMonths}개 반영`);
 
   const plain = JSON.stringify(bundle);
   const payload = await encrypt(plain, password, settings.pbkdf2Iterations);
@@ -401,13 +433,19 @@ async function main() {
 
   if (args.has('--dump')) {
     const todo = writeDump(bundle, messages, memberById, summaries, counts);
-    console.log(`  요약 작성용 원문 저장: private/dump (요약 필요: 주간 ${todo.weeks.length}개, 월간 ${todo.months.length}개)`);
+    console.log(`  요약 작성용 원문 저장: private/dump (요약 필요: 일일 ${todo.days.length}개, 주간 ${todo.weeks.length}개, 월간 ${todo.months.length}개)`);
   } else {
-    const stale = [];
+    const staleWeeks = [];
     for (const w of Object.keys(counts.weeks)) {
-      if ((summaries.weeks?.[w]?.basis?.count || 0) !== counts.weeks[w]) stale.push(weekLabel(w));
+      if ((summaries.weeks?.[w]?.basis?.count || 0) !== counts.weeks[w]) staleWeeks.push(weekLabel(w));
     }
-    if (stale.length) console.log(`  요약이 없거나 이전 데이터 기준인 주: ${stale.join(', ')} (Claude Code 에서 /update-dashboard 로 갱신)`);
+    let staleDays = 0;
+    for (const d of Object.keys(counts.days)) {
+      if ((summaries.days?.[d]?.basis?.count || 0) !== counts.days[d]) staleDays++;
+    }
+    if (staleWeeks.length || staleDays) {
+      console.log(`  요약이 없거나 이전 데이터 기준: 일일 ${staleDays}개, 주간 ${staleWeeks.join(', ') || '없음'} (Claude Code 에서 /update-dashboard 로 갱신)`);
+    }
   }
   console.log('완료');
 }

@@ -93,7 +93,8 @@
     S.members = bundle.members.slice().sort((a, b) => a.order - b.order);
     S.memberById = new Map(S.members.map((m) => [m.id, m]));
     S.reporters = S.members.filter((m) => m.role === 'member');
-    S.summaries = bundle.summaries || { weeks: {}, months: {} };
+    S.summaries = bundle.summaries || { days: {}, weeks: {}, months: {} };
+    S.summaries.days = S.summaries.days || {};
     S.summaries.weeks = S.summaries.weeks || {};
     S.summaries.months = S.summaries.months || {};
 
@@ -137,6 +138,8 @@
     S.weeks = Array.from(new Set(S.msgs.map((m) => m.w))).sort();
     S.months = Array.from(new Set(S.msgs.map((m) => m.mo))).sort();
     S.anchor = bundle.range.last;
+    // 지시(leader) 메시지가 데이터에 없으면 화면 제목을 "회의록"으로만 쓴다
+    S.hasDirectives = S.msgs.some((m) => m.k === 'directive');
 
     S.items = [];
     for (const m of S.msgs) {
@@ -364,7 +367,10 @@
     html += '<div class="headline">' + esc(sum.headline || '') + '</div>';
     if (sum.overview) html += '<p class="overview">' + esc(sum.overview) + '</p>';
 
-    const expected = type === 'week' ? S.bundle.counts.weeks[o.key] : S.bundle.counts.months[o.key];
+    let countMap = S.bundle.counts.months;
+    if (type === 'week') countMap = S.bundle.counts.weeks;
+    if (type === 'day') countMap = S.bundle.counts.days || {};
+    const expected = countMap[o.key];
     const basis = sum.basis && sum.basis.count;
     if (basis && expected && basis !== expected) {
       const diff = expected - basis;
@@ -374,6 +380,7 @@
     const sub = (title, inner) => '<div class="ai-sub"><h4>' + title + '</h4>' + inner + '</div>';
     const simpleList = (arr) => '<ul class="dots">' + arr.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>';
 
+    if (type === 'day' && sum.points && sum.points.length) html += sub('핵심 내용', simpleList(sum.points));
     if (type === 'week' && sum.questions && sum.questions.length) html += sub('회의에서 확인할 질문', simpleList(sum.questions));
     if (type === 'month' && sum.highlights && sum.highlights.length) html += sub('주요 성과', simpleList(sum.highlights));
     if (sum.issues && sum.issues.length) {
@@ -389,6 +396,7 @@
       html += sub('예정 일정', '<ul class="dots">' + rows.join('') + '</ul>');
     }
     if (type === 'month' && sum.carryOver && sum.carryOver.length) html += sub('다음 달로 이어지는 과제', simpleList(sum.carryOver));
+    if (type === 'day' && sum.followUps && sum.followUps.length) html += sub('다음에 확인할 일', simpleList(sum.followUps));
     if (!o.hideMembers && sum.byMember && sum.byMember.length) {
       const rows = sum.byMember.map((b) => '<li><div>' + esc(b.text) + '</div><div class="item-meta">' + whoHtml(b.id) + '</div></li>');
       const inner = '<ul class="plain">' + rows.join('') + '</ul>';
@@ -469,12 +477,16 @@
       kpi('보고 제출률', total ? Math.round((done / total) * 100) : '-', total ? '%' : '', done + ' / ' + total + ' (보고일 기준)') +
       kpi('특이사항', remarks.length, '건', '보고자가 특이사항으로 적은 줄') +
       kpi('협조 요청', requests.length, '건', '다른 팀장 이름이 들어간 요청') +
-      kpi('지시/회의록', directives.length + minutes.length, '건', '지시 ' + directives.length + ', 회의록 ' + minutes.length) +
+      (S.hasDirectives
+        ? kpi('지시/회의록', directives.length + minutes.length, '건', '지시 ' + directives.length + ', 회의록 ' + minutes.length)
+        : kpi('회의록', minutes.length, '건', '데일리 미팅, 숏미팅 내용 공유')) +
       '</div>';
 
     // AI 요약
     let aiHtml = '';
-    if (per.id === 'thismonth' || per.id === 'lastmonth') {
+    if (per.start === per.end) {
+      aiHtml = renderAiSummary(S.summaries.days[per.start], 'day', { key: per.start, label: mdw(per.start) + ' 일일', foldMembers: true });
+    } else if (per.id === 'thismonth' || per.id === 'lastmonth') {
       const key = per.start.slice(0, 7);
       aiHtml = renderAiSummary(S.summaries.months[key], 'month', { key: key, label: monthLabel(key) + ' 월간', foldMembers: true });
     } else {
@@ -483,8 +495,9 @@
         aiHtml = weeks.slice().reverse().map((w) => renderAiSummary(S.summaries.weeks[w], 'week', {
           key: w, label: weekLabel(w) + ' (' + weekRangeText(w) + ')', foldMembers: true,
         })).join('');
+        aiHtml += dailyHeadlines(per);
       } else if (weeks.length) {
-        aiHtml = '<div class="empty">기간이 길어 주간 요약은 <a href="#summary/week">주간/월간 요약</a> 화면에서 확인하세요.</div>';
+        aiHtml = '<div class="empty">기간이 길어 주간 요약은 <a href="#summary/week">일간/주간/월간 요약</a> 화면에서 확인하세요.</div>';
       } else {
         aiHtml = '<div class="empty">이 기간에는 메시지가 없습니다.</div>';
       }
@@ -503,8 +516,9 @@
     const scheduleRows = upcomingSchedule(per);
 
     html += '<div class="grid two">';
-    html += '<section class="card"><div class="card-head"><h3>사업부장 지시 / 회의록</h3><span class="count">' + directiveRows.length + '건</span></div>' +
-      listOrEmpty(directiveRows, '이 기간에 지시나 회의록이 없습니다.') + '</section>';
+    const directiveTitle = S.hasDirectives ? '사업부장 지시 / 회의록' : '회의록';
+    html += '<section class="card"><div class="card-head"><h3>' + directiveTitle + '</h3><span class="count">' + directiveRows.length + '건</span></div>' +
+      listOrEmpty(directiveRows, '이 기간에 올라온 회의록이 없습니다.') + '</section>';
     html += '<section class="card"><div class="card-head"><h3>특이사항</h3><span class="count">' + remarks.length + '건</span></div>' +
       listOrEmpty(remarks.map((it) => itemRow(it)), '보고에 적힌 특이사항이 없습니다.') + '</section>';
     html += '<section class="card"><div class="card-head"><h3>팀 간 협조 요청</h3><span class="count">' + requests.length + '건</span></div>' +
@@ -538,6 +552,14 @@
       $$('details', root).forEach((d) => { d.open = true; });
       window.print();
     });
+  }
+
+  function dailyHeadlines(per) {
+    const days = S.allDays.filter((d) => inPeriod(d, per) && S.summaries.days[d]);
+    if (!days.length) return '';
+    const rows = days.map((d) => '<li><a href="#day/' + d + '"><b class="num">' + mdw(d) + '</b></a> ' + esc(S.summaries.days[d].headline || '') + '</li>');
+    return '<div class="ai-box"><div><span class="ai-tag">AI 요약</span><span class="small muted">일별 한 줄</span></div>' +
+      '<ul class="plain" style="margin-top:6px">' + rows.join('') + '</ul></div>';
   }
 
   function kpi(label, value, unit, note) {
@@ -600,6 +622,7 @@
       return '<a class="day-chip' + cls + '" href="#day/' + d + '" data-day="' + d + '" data-tip="' + mdw(d) + ' 보고 ' + n + '명"><b>' + md(d) + '</b>' + wd(d) + '</a>';
     }).join('');
     html += '<div class="day-strip no-print" id="day-strip">' + strip + '</div><div class="section-gap"></div>';
+    html += '<section class="card">' + renderAiSummary(S.summaries.days[day], 'day', { key: day, label: mdw(day) + ' 일일 요약', foldMembers: true }) + '</section>';
 
     // 보고
     const reportCards = [];
@@ -619,7 +642,7 @@
 
     const directives = msgs.filter((m) => m.k === 'directive' || m.k === 'minutes');
     if (directives.length) {
-      html += '<section class="card"><div class="card-head"><h3>지시 / 회의록</h3><span class="count">' + directives.length + '건</span></div>' +
+      html += '<section class="card"><div class="card-head"><h3>' + (S.hasDirectives ? '지시 / 회의록' : '회의록') + '</h3><span class="count">' + directives.length + '건</span></div>' +
         directives.map((m) => msgCard(m)).join('') + '</section>';
     }
     const chats = msgs.filter((m) => m.k === 'chat');
@@ -694,17 +717,33 @@
       (kwPills ? '<div class="pills">' + kwPills + '</div>' : '<div class="empty">키워드 사전에 있는 프로젝트 언급이 없습니다.</div>') + '</section>';
     html += '</div><div class="section-gap"></div>';
 
-    // AI 주간 흐름
-    const flow = weeks.slice().reverse().map((w) => {
-      const s = S.summaries.weeks[w];
-      if (!s || !s.byMember) return '';
-      const entry = s.byMember.find((b) => b.id === id);
-      if (!entry) return '';
-      return '<li><div>' + esc(entry.text) + '</div><div class="item-meta"><a href="#summary/week/' + w + '">' + weekLabel(w) + ' (' + weekRangeText(w) + ')</a></div></li>';
-    }).filter(Boolean);
+    // AI 흐름: 기간이 2주 이내면 일별, 그보다 길면 주별
+    const spanDays = Math.round((parseIso(per.end) - parseIso(per.start)) / 86400000) + 1;
+    const useDaily = spanDays <= 14;
+    let flow = [];
+    if (useDaily) {
+      const dayKeys = S.allDays.filter((d) => inPeriod(d, per)).slice().reverse();
+      for (const d of dayKeys) {
+        const s = S.summaries.days[d];
+        if (!s || !s.byMember) continue;
+        const entry = s.byMember.find((b) => b.id === id);
+        if (!entry) continue;
+        flow.push('<li><div>' + esc(entry.text) + '</div><div class="item-meta">' + dayLink(d) + '</div></li>');
+      }
+    } else {
+      for (const w of weeks.slice().reverse()) {
+        const s = S.summaries.weeks[w];
+        if (!s || !s.byMember) continue;
+        const entry = s.byMember.find((b) => b.id === id);
+        if (!entry) continue;
+        flow.push('<li><div>' + esc(entry.text) + '</div><div class="item-meta"><a href="#summary/week/' + w + '">' + weekLabel(w) + ' (' + weekRangeText(w) + ')</a></div></li>');
+      }
+    }
+    const flowTitle = useDaily ? '일별 흐름' : '주간 흐름';
+    const flowNote = useDaily ? '' : ' <span class="small muted">기간을 2주 이내로 고르면 일별로 나옵니다</span>';
     html += '<div class="grid two">';
-    html += '<section class="card"><div class="card-head"><h3>주간 흐름</h3><span class="count"><span class="ai-tag">AI 요약</span></span></div>' +
-      listOrEmpty(flow, '이 기간의 주간 요약이 없습니다.') + '</section>';
+    html += '<section class="card"><div class="card-head"><h3>' + flowTitle + flowNote + '</h3><span class="count"><span class="ai-tag">AI 요약</span></span></div>' +
+      listOrEmpty(flow, '이 기간의 AI 요약이 없습니다.') + '</section>';
     html += '<section class="card"><div class="card-head"><h3>받은 협조 요청</h3><span class="count">' + received.length + '건</span></div>' +
       listOrEmpty(received.slice().reverse().map((it) => itemRow(it)), '다른 팀장이 이름을 들어 요청한 내용이 없습니다.') + '</section>';
     html += '</div><div class="section-gap"></div>';
@@ -729,30 +768,46 @@
     bindUnclamp(root);
   }
 
-  // ============================================================ 4. 주간/월간 요약
+  // ============================================================ 4. 일간/주간/월간 요약
 
   function renderSummary(root, args) {
-    const type = args[0] === 'month' ? 'month' : 'week';
-    const keys = type === 'week' ? S.weeks.slice().reverse() : S.months.slice().reverse();
+    let type = 'week';
+    if (args[0] === 'month') type = 'month';
+    if (args[0] === 'day') type = 'day';
+    let keys = S.weeks.slice().reverse();
+    if (type === 'month') keys = S.months.slice().reverse();
+    if (type === 'day') keys = S.allDays.filter((d) => (S.bundle.counts.days || {})[d]).reverse();
     const key = args[1] && keys.indexOf(args[1]) >= 0 ? args[1] : keys[0];
     const pos = keys.indexOf(key);
     const newer = pos > 0 ? keys[pos - 1] : null;
     const older = pos < keys.length - 1 ? keys[pos + 1] : null;
-    const per = type === 'week'
-      ? { id: 'custom', start: key, end: addDays(key, 6) }
-      : { id: 'custom', start: key + '-01', end: monthEnd(key) };
-    const label = type === 'week' ? weekLabel(key) + ' (' + weekRangeText(key) + ')' : monthLabel(key) + ' (' + key.slice(0, 4) + '년)';
-    const store = type === 'week' ? S.summaries.weeks : S.summaries.months;
+    let per = { id: 'custom', start: key, end: addDays(key, 6) };
+    let label = weekLabel(key) + ' (' + weekRangeText(key) + ')';
+    let store = S.summaries.weeks;
+    if (type === 'month') {
+      per = { id: 'custom', start: key + '-01', end: monthEnd(key) };
+      label = monthLabel(key) + ' (' + key.slice(0, 4) + '년)';
+      store = S.summaries.months;
+    } else if (type === 'day') {
+      per = { id: 'custom', start: key, end: key };
+      label = (+key.slice(5, 7)) + '월 ' + (+key.slice(8, 10)) + '일 (' + wd(key) + ')';
+      store = S.summaries.days;
+    }
+    const titles = { day: '일일 요약', week: '주간 요약', month: '월간 요약' };
 
     const options = keys.map((k) => {
-      const l = type === 'week' ? weekLabel(k) + ' (' + weekRangeText(k) + ')' : monthLabel(k);
+      let l = weekLabel(k) + ' (' + weekRangeText(k) + ')';
+      if (type === 'month') l = monthLabel(k);
+      if (type === 'day') l = mdw(k);
       const mark = store[k] ? '' : ' - 요약 없음';
       return '<option value="' + k + '"' + (k === key ? ' selected' : '') + '>' + esc(l + mark) + '</option>';
     }).join('');
 
-    let html = '<div class="view-head"><div><h2>' + (type === 'week' ? '주간 요약' : '월간 요약') + '</h2><div class="sub">' + esc(label) + '</div></div>' +
+    const segBtn = (t, text) => '<button class="' + (type === t ? 'on' : '') + '" data-type="' + t + '">' + text + '</button>';
+    const dayLinkBtn = type === 'day' ? '<a class="btn small" href="#day/' + key + '">원문 보기</a>' : '';
+    let html = '<div class="view-head"><div><h2>' + titles[type] + '</h2><div class="sub">' + esc(label) + '</div></div>' +
       '<div class="toolbar no-print">' +
-      '<div class="seg"><button class="' + (type === 'week' ? 'on' : '') + '" data-type="week">주간</button><button class="' + (type === 'month' ? 'on' : '') + '" data-type="month">월간</button></div>' +
+      '<div class="seg">' + segBtn('day', '일간') + segBtn('week', '주간') + segBtn('month', '월간') + '</div>' + dayLinkBtn +
       '<button class="btn small" id="sum-older"' + (older ? '' : ' disabled') + '>이전</button>' +
       '<select id="sum-pick" aria-label="기간 선택">' + options + '</select>' +
       '<button class="btn small" id="sum-newer"' + (newer ? '' : ' disabled') + '>다음</button>' +
@@ -932,7 +987,7 @@
     html += '<section class="card small ink2"><b>보는 법</b><ul class="dots">' +
       '<li>보고일은 하루에 ' + (S.bundle.minReportsForWorkday || 3) + '명 이상 일일보고가 올라온 날입니다. 주말과 추석 연휴처럼 보고가 거의 없는 날은 자동으로 빠집니다.</li>' +
       '<li>해외 출장자가 다음 날 아침(한국 시간)에 올린 보고는 보고 머리글에 적힌 날짜로 셉니다.</li>' +
-      '<li>사장님 메시지는 지시사항, 회의 내용 공유는 회의록으로 따로 분류해 이 표에는 넣지 않았습니다.</li>' +
+      '<li>데일리 미팅, 숏미팅 내용 공유는 회의록으로 따로 분류해 이 표에는 넣지 않았습니다.</li>' +
       '</ul></section>';
 
     root.innerHTML = html;
@@ -1003,7 +1058,7 @@
     const html = '<div class="view-head"><div><h2>활용 안내</h2><div class="sub">회의 종류별로 어떤 화면을 보면 되는지 정리했습니다.</div></div></div>' +
       '<div class="grid two">' +
       '<section class="card guide"><h3>아침 데일리 미팅</h3><ol>' +
-      '<li><b>회의 브리핑</b>에서 <b>최근 보고일</b>을 고릅니다. 전날 올라온 특이사항, 팀 간 협조 요청, 사장님 지시가 한 화면에 모입니다.</li>' +
+      '<li><b>회의 브리핑</b>에서 <b>최근 보고일</b>을 고릅니다. 전날 AI 일일 요약과 특이사항, 팀 간 협조 요청, 회의록이 한 화면에 모입니다.</li>' +
       '<li><b>보고에 나온 일정</b>에서 이번 주 안에 걸린 출하, 출장, 셋업 날짜를 확인합니다.</li>' +
       '<li>세부 내용이 필요하면 날짜를 눌러 <b>일자별</b> 화면에서 원문을 봅니다.</li></ol></section>' +
       '<section class="card guide"><h3>주간 회의</h3><ol>' +
@@ -1012,8 +1067,8 @@
       '<li><b>프로젝트</b> 화면에서 LGES, BNYE처럼 여러 팀이 같이 움직이는 건을 골라 팀별 진행을 이어서 봅니다.</li>' +
       '<li><b>인쇄 / PDF</b> 버튼으로 회의 자료를 바로 출력할 수 있습니다.</li></ol></section>' +
       '<section class="card guide"><h3>월간 점검</h3><ol>' +
-      '<li><b>주간/월간 요약</b>에서 <b>월간</b>을 고르면 그 달의 성과, 이슈, 다음 달로 넘어가는 과제가 정리돼 있습니다.</li>' +
-      '<li><b>인원별</b> 화면의 주간 흐름으로 한 사람의 한 달 업무를 주 단위로 훑어볼 수 있습니다.</li>' +
+      '<li><b>일간/주간/월간 요약</b>에서 <b>월간</b>을 고르면 그 달의 성과, 이슈, 다음 달로 넘어가는 과제가 정리돼 있습니다.</li>' +
+      '<li><b>인원별</b> 화면의 주간 흐름으로 한 사람의 한 달 업무를 주 단위로 훑어볼 수 있습니다. 기간을 2주 이내로 고르면 하루 단위로 나옵니다.</li>' +
       '<li><b>보고 현황</b>은 누락 확인용이 아니라 출장, 연차로 비는 날을 파악하는 데 쓰는 편이 좋습니다.</li></ol></section>' +
       '<section class="card guide"><h3>링크 공유</h3><ul>' +
       '<li>주소창의 주소가 지금 보는 화면을 그대로 가리킵니다. 특정 날짜나 사람 화면을 톡방에 링크로 붙이면 받은 사람도 같은 화면을 엽니다.</li>' +
