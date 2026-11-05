@@ -5,3 +5,9 @@ raw/
 private/
 node_modules/
 .claude/settings.local.json
+
+# 자동 업데이트 프로그램 빌드 결과와 실행 기록
+tools/**/bin/
+tools/**/obj/
+logs/
+*.code-workspace

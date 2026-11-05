@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Windows 내장 OCR(Windows.Media.Ocr)을 쓰기 위해 Windows 10 SDK 버전을 지정 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>KakaoAutoUpdate</AssemblyName>
+    <RootNamespace>KakaoAutoUpdate</RootNamespace>
+    <!-- 현장 디버깅용: Release 에서도 pdb 를 남긴다 -->
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+</Project>
