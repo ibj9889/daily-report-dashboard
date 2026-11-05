@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>팀장 일일보고</title>
+  <link rel="stylesheet" href="style.css?v=mw3defki">
+</head>
+<body>
+  <section id="gate" class="gate">
+    <form id="gate-form" class="gate-box" autocomplete="off">
+      <h1>팀장 일일보고 대시보드</h1>
+      <p>사내 열람용 페이지입니다. 공유받은 비밀번호를 입력하세요.</p>
+      <input id="gate-pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+      <label><input id="gate-remember" type="checkbox" checked> 이 기기에서 기억하기</label>
+      <button id="gate-btn" class="btn primary block" type="submit">열기</button>
+      <div id="gate-error" class="gate-error" role="alert"></div>
+    </form>
+  </section>
+
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="title-row">
+          <h1 id="app-title">팀장 일일보고</h1>
+          <div class="title-meta">
+            <span id="app-range"></span>
+            <button id="logout" class="btn small" type="button">잠금</button>
+          </div>
+        </div>
+        <nav class="tabs" id="tabs">
+          <button class="tab" data-view="brief">회의 브리핑</button>
+          <button class="tab" data-view="day">일자별</button>
+          <button class="tab" data-view="member">인원별</button>
+          <button class="tab" data-view="summary">주간/월간 요약</button>
+          <button class="tab" data-view="project">프로젝트</button>
+          <button class="tab" data-view="status">보고 현황</button>
+          <button class="tab" data-view="search">검색</button>
+          <button class="tab" data-view="guide">활용 안내</button>
+        </nav>
+      </div>
+    </header>
+    <main id="view"></main>
+  </div>
+
+  <div id="tip" class="tip" role="tooltip"></div>
+
+  <script src="data.enc.js?v=mw3defki"></script>
+  <script src="app.js?v=mw3defki"></script>
+</body>
+</html>

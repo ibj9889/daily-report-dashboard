@@ -1,0 +1,7 @@
+# 카톡 원문, 인원/키워드 설정, AI 요약, 비밀번호는 공개 저장소에 올리지 않는다.
+# 화면에 필요한 내용은 모두 docs/data.enc.js 에 암호화되어 들어간다.
+*.txt
+raw/
+private/
+node_modules/
+.claude/settings.local.json
